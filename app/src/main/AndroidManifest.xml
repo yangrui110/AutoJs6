@@ -207,23 +207,29 @@
             android:value="${CHANNEL}" />
 
         <activity
+            android:name="org.autojs.autojs.ui.home.NewHomeActivity"
+            android:exported="true"
+            android:icon="@drawable/autojs6_material"
+            android:label="@string/app_name"
+            android:theme="@style/AppTheme"
+            tools:ignore="RedundantLabel">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="${intentCategory}" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/app_shortcuts" />
+        </activity>
+
+        <activity
             android:name="org.autojs.autojs.ui.splash.SplashActivity"
             android:exported="true"
             android:icon="@drawable/autojs6_material"
             android:label="@string/app_name"
             android:theme="@style/AppTheme.Splash"
             tools:ignore="RedundantLabel">
-            <intent-filter>
-
-                <action android:name="android.intent.action.MAIN" />
-
-                <category android:name="${intentCategory}" />
-
-            </intent-filter>
-
-            <meta-data
-                android:name="android.app.shortcuts"
-                android:resource="@xml/app_shortcuts" />
         </activity>
 
         <activity
