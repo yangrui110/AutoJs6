@@ -31,13 +31,20 @@ import org.webrtc.ScreenCapturerAndroid;
 import org.webrtc.SessionDescription;
 import org.webrtc.SurfaceTextureHelper;
 import org.webrtc.VideoCapturer;
+import org.webrtc.VideoFrame;
 import org.webrtc.VideoSource;
 import org.webrtc.VideoTrack;
+import org.webrtc.VideoSink;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -97,6 +104,12 @@ public class WebRTCService {
     private MediaStream localMediaStream;
     private SurfaceTextureHelper surfaceTextureHelper;
     
+    // 屏幕捕获相关变量
+    private int captureWidth = 1280;
+    private int captureHeight = 720;
+    private int captureFrameRate = 20;
+    private ScreenCapturerAndroid screenCapturer;
+    
     // 维护所有对等连接
     private List<Peer> peers = new ArrayList<>();
     
@@ -110,6 +123,11 @@ public class WebRTCService {
     
     // 心跳定时器
     private java.util.Timer heartbeatTimer;
+    
+    // 添加帧率监控变量
+    private long frameCount = 0;
+    private long lastFpsLogTime = 0;
+    private final Object fpsLock = new Object();
     
     /**
      * 表示一个对等连接
@@ -179,16 +197,31 @@ public class WebRTCService {
 
                 @Override
                 public void onIceCandidate(IceCandidate iceCandidate) {
-                    Log.d(TAG, "onIceCandidate: " + iceCandidate);
                     try {
+                        if (iceCandidate == null) {
+                            Log.d(TAG, "收到空ICE候选");
+                            return;
+                        }
+                        
+                        Log.d(TAG, "生成ICE候选: " + iceCandidate.sdp);
+                        
+                        // 创建标准格式的ICE候选对象
+                        JSONObject candidateJson = new JSONObject();
+                        candidateJson.put("sdpMid", iceCandidate.sdpMid);
+                        candidateJson.put("sdpMLineIndex", iceCandidate.sdpMLineIndex);
+                        candidateJson.put("candidate", iceCandidate.sdp);
+                        
+                        // 创建信令消息
                         JSONObject message = new JSONObject();
                         message.put("type", "candidate");
                         message.put("from", mClientId);
                         message.put("to", id);
-                        message.put("candidate", serializeIceCandidate(iceCandidate));
+                        message.put("candidate", candidateJson);
+                        
+                        // 发送到信令服务器
                         sendMessage(message);
-                    } catch (JSONException e) {
-                        Log.e(TAG, "发送ICE候选失败", e);
+                    } catch (Exception e) {
+                        Log.e(TAG, "发送ICE候选时出错: " + e.getMessage(), e);
                     }
                 }
 
@@ -339,51 +372,84 @@ public class WebRTCService {
         
         // 优化SDP
         private String optimizeSdp(String sdp) {
-            // 修改SDP参数以优化视频质量和兼容性
-            String[] lines = sdp.split("\r\n");
-            StringBuilder newSdp = new StringBuilder();
-            
-            boolean inVideoSection = false;
-            
-            for (String line : lines) {
-                // 检测是否进入视频部分
-                if (line.startsWith("m=video")) {
-                    inVideoSection = true;
-                } else if (line.startsWith("m=")) {
-                    inVideoSection = false;
+            try {
+                Log.d(TAG, "开始优化SDP，原始长度: " + sdp.length());
+                
+                String[] lines = sdp.split("\r\n");
+                StringBuilder newSdp = new StringBuilder();
+                boolean isVideoSection = false;
+                boolean hasAddedVideoBandwidth = false;
+                
+                for (String line : lines) {
+                    // 检测视频部分
+                    if (line.startsWith("m=video")) {
+                        isVideoSection = true;
+                    } else if (line.startsWith("m=")) {
+                        isVideoSection = false;
+                    }
+                    
+                    // 在视频部分添加优化
+                    if (isVideoSection) {
+                        // 添加原始行
+                        newSdp.append(line).append("\r\n");
+                        
+                        // 在视频部分的特定位置添加带宽限制
+                        if (line.startsWith("a=rtpmap") && !hasAddedVideoBandwidth) {
+                            // 设置内容类型为屏幕共享
+                            newSdp.append("a=content:main\r\n");
+                            
+                            // 标记为发送流
+                            newSdp.append("a=sendonly\r\n");
+                            
+                            // 设置带宽限制 - 标准格式
+                            newSdp.append("b=AS:300\r\n");
+                            newSdp.append("b=TIAS:300000\r\n");
+                            
+                            // 添加标准的fmtp参数，确保格式正确
+                            int payloadType = extractPayloadType(line);
+                            if (payloadType > 0) {
+                                // 使用提取的payload type添加fmtp参数
+                                newSdp.append("a=fmtp:").append(payloadType).append(" x-google-start-bitrate=200;x-google-min-bitrate=100;x-google-max-bitrate=300\r\n");
+                                
+                                // 添加标准的反馈机制
+                                newSdp.append("a=rtcp-fb:").append(payloadType).append(" nack\r\n");
+                                newSdp.append("a=rtcp-fb:").append(payloadType).append(" nack pli\r\n");
+                                newSdp.append("a=rtcp-fb:").append(payloadType).append(" ccm fir\r\n");
+                                newSdp.append("a=rtcp-fb:").append(payloadType).append(" goog-remb\r\n");
+                            }
+                            
+                            hasAddedVideoBandwidth = true;
+                        }
+                    } else {
+                        // 非视频部分直接添加
+                        newSdp.append(line).append("\r\n");
+                    }
                 }
                 
-                // 在视频部分添加特定优化
-                if (inVideoSection) {
-                    // 跳过某些可能导致兼容性问题的行
-                    if (line.contains("goog-remb") || line.contains("transport-cc") || 
-                        line.contains("nack pli") || line.contains("ccm fir")) {
-                        // 保留这些对视频流控制重要的属性
-                        newSdp.append(line).append("\r\n");
-                    }
-                    // 修改某些视频编码相关参数
-                    else if (line.contains("x-google-")) {
-                        // 保留谷歌特定的扩展
-                        newSdp.append(line).append("\r\n");
-                    }
-                    else {
-                        newSdp.append(line).append("\r\n");
-                    }
-                } else {
-                    // 对于非视频部分，保持不变
-                    newSdp.append(line).append("\r\n");
-                }
-                
-                // 在视频媒体行后添加优化参数
-                if (line.startsWith("m=video")) {
-                    // 添加其他对屏幕共享有益的属性
-                    newSdp.append("a=content:slides\r\n");
-                    newSdp.append("a=quality:high\r\n");
-                    newSdp.append("a=sendonly\r\n"); // 明确标记为只发送
-                }
+                String optimizedSdp = newSdp.toString();
+                Log.d(TAG, "SDP优化完成，新长度: " + optimizedSdp.length());
+                return optimizedSdp;
+            } catch (Exception e) {
+                Log.e(TAG, "优化SDP时出错: " + e.getMessage(), e);
+                return sdp; // 出错时返回原始SDP
             }
-            
-            return newSdp.toString();
+        }
+        
+        // 从rtpmap行中提取payload type
+        private int extractPayloadType(String rtpmapLine) {
+            try {
+                // 格式: a=rtpmap:96 VP8/90000
+                String[] parts = rtpmapLine.split(":");
+                if (parts.length > 1) {
+                    String[] subParts = parts[1].split(" ");
+                    if (subParts.length > 0) {
+                        return Integer.parseInt(subParts[0]);
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "提取payload type失败: " + e.getMessage());
+            }
+            return 96; // 默认返回96，这是VP8的常用值
         }
         
         public void handleRemoteOffer(String sdp) {
@@ -612,20 +678,93 @@ public class WebRTCService {
             
             PeerConnectionFactory.initialize(initializationOptions);
             
-            // 创建编解码器工厂
-            DefaultVideoEncoderFactory defaultVideoEncoderFactory = 
-                    new DefaultVideoEncoderFactory(
-                            eglBase != null ? eglBase.getEglBaseContext() : null, 
-                            true, 
-                            true);
+            // 创建编解码器工厂，并进行优化
+            DefaultVideoEncoderFactory defaultVideoEncoderFactory;
+            DefaultVideoDecoderFactory defaultVideoDecoderFactory;
             
-            DefaultVideoDecoderFactory defaultVideoDecoderFactory = 
-                    new DefaultVideoDecoderFactory(
-                            eglBase != null ? eglBase.getEglBaseContext() : null);
+            if (eglBase != null && eglBase.getEglBaseContext() != null) {
+                // 创建视频编码器工厂，启用硬件加速和H.264高性能模式
+                defaultVideoEncoderFactory = new DefaultVideoEncoderFactory(
+                        eglBase.getEglBaseContext(), 
+                        true,  // 启用硬件编码器
+                        true); // 启用H.264高性能模式
+                
+                // 优化编码器设置
+                try {
+                    // 获取支持的编解码器
+                    org.webrtc.VideoCodecInfo[] supportedCodecs = 
+                            defaultVideoEncoderFactory.getSupportedCodecs();
+                    
+                    Log.d(TAG, "支持的视频编解码器:");
+                    for (org.webrtc.VideoCodecInfo codec : supportedCodecs) {
+                        Log.d(TAG, "  - " + codec.name);
+                    }
+                    
+                    // 优先使用VP8/VP9编解码器
+                    java.util.ArrayList<org.webrtc.VideoCodecInfo> preferredCodecs = 
+                            new java.util.ArrayList<>();
+                    
+                    // 首先添加VP8（如果支持）- VP8通常延迟更低
+                    for (org.webrtc.VideoCodecInfo codec : supportedCodecs) {
+                        if (codec.name.equalsIgnoreCase("VP8")) {
+                            preferredCodecs.add(codec);
+                            break;
+                        }
+                    }
+                    
+                    // 然后添加H264（如果支持）
+                    for (org.webrtc.VideoCodecInfo codec : supportedCodecs) {
+                        if (codec.name.equalsIgnoreCase("H264")) {
+                            preferredCodecs.add(codec);
+                            break;
+                        }
+                    }
+                    
+                    // 最后添加VP9（如果支持）
+                    for (org.webrtc.VideoCodecInfo codec : supportedCodecs) {
+                        if (codec.name.equalsIgnoreCase("VP9")) {
+                            preferredCodecs.add(codec);
+                            break;
+                        }
+                    }
+                    
+                    // 添加其他编解码器
+                    for (org.webrtc.VideoCodecInfo codec : supportedCodecs) {
+                        if (!preferredCodecs.contains(codec)) {
+                            preferredCodecs.add(codec);
+                        }
+                    }
+                    
+                    Log.d(TAG, "优先使用的编解码器顺序:");
+                    for (org.webrtc.VideoCodecInfo codec : preferredCodecs) {
+                        Log.d(TAG, "  - " + codec.name);
+                    }
+                    
+                    // 创建自定义编码器工厂
+                    defaultVideoEncoderFactory = new CustomVideoEncoderFactory(
+                            eglBase.getEglBaseContext(),
+                            true,
+                            true,
+                            preferredCodecs.toArray(new org.webrtc.VideoCodecInfo[0]));
+                } catch (Exception e) {
+                    Log.e(TAG, "优化视频编码器失败，使用默认设置: " + e.getMessage(), e);
+                }
+                
+                // 创建解码器工厂
+                defaultVideoDecoderFactory = new DefaultVideoDecoderFactory(eglBase.getEglBaseContext());
+            } else {
+                Log.w(TAG, "EglBase为null或EglBaseContext为null，使用默认编解码器工厂");
+                defaultVideoEncoderFactory = new DefaultVideoEncoderFactory(null, true, true);
+                defaultVideoDecoderFactory = new DefaultVideoDecoderFactory(null);
+            }
             
             // 创建PeerConnectionFactory
             PeerConnectionFactory.Options options = new PeerConnectionFactory.Options();
+            // 添加低延时选项
+            options.disableNetworkMonitor = true; // 禁用网络监控以减少开销
+            options.disableEncryption = false;    // 保持加密
             
+            // 创建工厂
             peerConnectionFactory = PeerConnectionFactory.builder()
                     .setOptions(options)
                     .setVideoEncoderFactory(defaultVideoEncoderFactory)
@@ -634,6 +773,21 @@ public class WebRTCService {
             
             if (peerConnectionFactory == null) {
                 throw new RuntimeException("无法创建PeerConnectionFactory");
+            }
+            
+            // 尝试设置工厂的全局参数
+            try {
+                Method setVideoHwAccelerationOptions = peerConnectionFactory.getClass().getDeclaredMethod(
+                        "setVideoHwAccelerationOptions", EglBase.Context.class, EglBase.Context.class);
+                if (setVideoHwAccelerationOptions != null && eglBase != null) {
+                    setVideoHwAccelerationOptions.invoke(
+                            peerConnectionFactory, 
+                            eglBase.getEglBaseContext(), 
+                            eglBase.getEglBaseContext());
+                    Log.d(TAG, "成功设置视频硬件加速选项");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "设置视频硬件加速选项失败: " + e.getMessage());
             }
             
             Log.d(TAG, "PeerConnectionFactory创建成功");
@@ -655,6 +809,12 @@ public class WebRTCService {
         // 设置SDP约束
         sdpConstraints.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"));
         sdpConstraints.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"));
+        
+        // 添加视频约束，优化屏幕共享
+        videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair("maxWidth", "1280"));
+        videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair("maxHeight", "720"));
+        videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair("maxFrameRate", "25"));
+        videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair("minFrameRate", "15"));
     }
     
     /**
@@ -927,296 +1087,183 @@ public class WebRTCService {
      */
     private void createScreenCapturer() {
         try {
-            // 获取屏幕尺寸
-            WindowManager windowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
-            DisplayMetrics metrics = new DisplayMetrics();
-            windowManager.getDefaultDisplay().getMetrics(metrics);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                // 获取屏幕尺寸
+                DisplayMetrics metrics = new DisplayMetrics();
+                WindowManager windowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
+                windowManager.getDefaultDisplay().getRealMetrics(metrics);
+                int screenWidth = metrics.widthPixels;
+                int screenHeight = metrics.heightPixels;
+                float screenDensity = metrics.density;
                 
-            int screenWidth = metrics.widthPixels;
-            int screenHeight = metrics.heightPixels;
-            int screenDensity = metrics.densityDpi;
-            
-            Log.d(TAG, "屏幕尺寸: " + screenWidth + "x" + screenHeight + ", 密度: " + screenDensity);
-            
-            // 确保之前的MediaProjection已停止
-            if (mediaProjection != null) {
-                Log.d(TAG, "停止之前的MediaProjection");
-                mediaProjection.stop();
-                mediaProjection = null;
-            }
-            
-            // 使用自定义的屏幕捕获器
-            videoCapturer = new CustomScreenCapturer(
-                    mediaProjectionPermissionResultData,
-                    new MediaProjection.Callback() {
-                        @Override
-                        public void onStop() {
-                            Log.d(TAG, "MediaProjection已停止");
-                            // 停止屏幕共享
-                            mainHandler.post(() -> {
-                                if (mListener != null) {
-                                    mListener.onScreenCaptureStopped();
+                // 记录屏幕实际尺寸
+                Log.d(TAG, "Screen size: " + screenWidth + "x" + screenHeight + ", density: " + screenDensity);
+                
+                // 计算合适的捕获尺寸
+                int captureWidth, captureHeight;
+                
+                // 使用更高的分辨率以确保画面清晰
+                captureWidth = 640;  // 使用640p分辨率
+                captureHeight = 360; // 16:9比例
+                captureFrameRate = 15; // 使用15fps，平衡延迟和流畅度
+                
+                Log.d(TAG, "使用屏幕捕获设置: " + captureWidth + "x" + captureHeight + "@" + captureFrameRate + "fps");
+                
+                // 确保宽高比与屏幕一致
+                float screenRatio = (float)screenWidth / screenHeight;
+                float captureRatio = (float)captureWidth / captureHeight;
+                
+                if (Math.abs(screenRatio - captureRatio) > 0.01) {
+                    // 宽高比不匹配，调整以保持屏幕宽高比
+                    captureHeight = Math.round(captureWidth / screenRatio);
+                }
+                
+                // 确保宽高是偶数（编码器要求）
+                captureWidth = captureWidth - (captureWidth % 2);
+                captureHeight = captureHeight - (captureHeight % 2);
+                
+                // 更新捕获参数
+                this.captureWidth = captureWidth;
+                this.captureHeight = captureHeight;
+                
+                Log.d(TAG, "最终捕获分辨率: " + captureWidth + "x" + captureHeight + "@" + captureFrameRate + "fps");
+                
+                // 创建屏幕捕获器
+                MediaProjectionManager mediaProjectionManager =
+                        (MediaProjectionManager) mContext.getSystemService(
+                                Context.MEDIA_PROJECTION_SERVICE);
+                
+                try {
+                    // 尝试使用新版本的构造函数（带有MediaProjection.Callback参数）
+                    screenCapturer = new ScreenCapturerAndroid(
+                            mediaProjectionPermissionResultData,
+                            new MediaProjection.Callback() {
+                                @Override
+                                public void onStop() {
+                                    Log.e(TAG, "MediaProjection stopped");
                                 }
                             });
-                        }
-                    });
-            
-            Log.d(TAG, "屏幕捕获器创建成功");
-        } catch (Exception e) {
-            Log.e(TAG, "创建屏幕捕获器失败", e);
-            throw new RuntimeException("创建屏幕捕获器失败: " + e.getMessage(), e);
-        }
-    }
-    
-    /**
-     * 自定义屏幕捕获器，用于解决MediaProjection重复启动问题
-     */
-    private class CustomScreenCapturer extends ScreenCapturerAndroid {
-        private boolean isCapturing = false;
-        private int width;
-        private int height;
-        private int fps;
-        
-        public CustomScreenCapturer(Intent intent, MediaProjection.Callback callback) {
-            super(intent, callback);
-        }
-        
-        @Override
-        public void startCapture(int width, int height, int fps)  {
-            if (isCapturing) {
-                Log.w(TAG, "屏幕捕获已经在运行中，避免重复启动");
-                return;
-            }
-            
-            this.width = width;
-            this.height = height;
-            this.fps = fps;
-            
-            try {
-                Log.d(TAG, "开始屏幕捕获: " + width + "x" + height + " @ " + fps + "fps");
-                super.startCapture(width, height, fps);
-                isCapturing = true;
-            } catch (Exception e) {
-                if (e.getMessage() != null && e.getMessage().contains("Cannot start already started MediaProjection")) {
-                    Log.w(TAG, "MediaProjection已经启动，忽略此错误");
-                    isCapturing = true;
-                    // 即使抛出了异常，捕获器可能实际上已经启动，所以我们标记为已捕获
-                } else {
-                    Log.e(TAG, "启动屏幕捕获失败", e);
-                    throw e;
-                }
-            }
-        }
-        
-        @Override
-        public void stopCapture()  {
-            if (!isCapturing) {
-                Log.w(TAG, "屏幕捕获未运行，无需停止");
-                return;
-            }
-            
-            try {
-                Log.d(TAG, "停止屏幕捕获");
-                super.stopCapture();
-            } catch (Exception e) {
-                Log.e(TAG, "停止屏幕捕获出错", e);
-            } finally {
-                isCapturing = false;
-            }
-        }
-        
-        public void restart() {
-            if (isCapturing) {
-                try {
-                    stopCapture();
-                    Thread.sleep(100);  // 短暂延迟确保停止完成
-                    startCapture(width, height, fps);
-                    Log.d(TAG, "屏幕捕获已重启");
-                } catch (Exception e) {
-                    Log.e(TAG, "重启屏幕捕获失败", e);
-                }
-            }
-        }
-    }
-    
-    /**
-     * 释放屏幕捕获器
-     */
-    private void releaseScreenCapturer() {
-        if (videoCapturer != null) {
-            try {
-                videoCapturer.stopCapture();
-            } catch (InterruptedException e) {
-                Log.e(TAG, "停止视频捕获出错", e);
-            }
-            videoCapturer.dispose();
-            videoCapturer = null;
-        }
-        
-        if (mediaProjection != null) {
-            mediaProjection.stop();
-            mediaProjection = null;
-        }
-        
-        if (mListener != null) {
-            mainHandler.post(() -> mListener.onScreenCaptureStopped());
-        }
-        
-        Log.d(TAG, "屏幕捕获器已释放");
-    }
-    
-    /**
-     * 创建本地媒体流
-     */
-    private void createLocalStream() {
-        try {
-            // 确保EglBase已创建
-            if (eglBase == null) {
-                try {
-                    Log.d(TAG, "重新创建EglBase");
-                    eglBase = EglBase.create(null, EglBase.CONFIG_PLAIN);
-                    if (eglBase == null) {
-                        Log.e(TAG, "无法创建EglBase，但将继续尝试");
-                    } else {
-                        Log.d(TAG, "EglBase创建成功");
+                    Log.d(TAG, "成功创建ScreenCapturerAndroid (带回调)");
+                } catch (NoSuchMethodError e) {
+                    Log.d(TAG, "新版本构造函数不可用，尝试使用旧版本构造函数");
+                    try {
+                        // 尝试使用旧版本的构造函数（不带回调参数）
+                        // 使用反射来调用不同参数的构造函数
+                        java.lang.reflect.Constructor<?> constructor = 
+                            ScreenCapturerAndroid.class.getConstructor(Intent.class);
+                        screenCapturer = (ScreenCapturerAndroid) constructor.newInstance(mediaProjectionPermissionResultData);
+                        Log.d(TAG, "成功使用旧版本构造函数创建ScreenCapturerAndroid");
+                    } catch (Exception e2) {
+                        Log.e(TAG, "创建ScreenCapturerAndroid失败: " + e2.getMessage(), e2);
+                        throw new RuntimeException("无法创建屏幕捕获器", e2);
                     }
                 } catch (Exception e) {
-                    Log.e(TAG, "创建EglBase失败: " + e.getMessage(), e);
-                    // 继续尝试，即使没有EglBase也可能部分功能可用
+                    Log.e(TAG, "创建ScreenCapturerAndroid异常: " + e.getMessage(), e);
+                    throw new RuntimeException("无法创建屏幕捕获器", e);
                 }
-            }
-            
-            // 创建SurfaceTextureHelper
-            try {
-                if (eglBase != null) {
-                    if (surfaceTextureHelper != null) {
-                        Log.d(TAG, "复用已存在的SurfaceTextureHelper");
-                    } else {
-                        surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBase.getEglBaseContext());
-                        if (surfaceTextureHelper == null) {
-                            Log.e(TAG, "创建SurfaceTextureHelper失败但将继续");
-                        } else {
-                            Log.d(TAG, "SurfaceTextureHelper创建成功");
+                
+                // 将screenCapturer赋值给videoCapturer
+                videoCapturer = screenCapturer;
+                
+                // 设置捕获参数
+                SurfaceTextureHelper surfaceTextureHelper = SurfaceTextureHelper.create("ScreenCapturerThread", eglBase.getEglBaseContext());
+                videoSource = peerConnectionFactory.createVideoSource(true); // 强制设置为屏幕共享模式
+                
+                // 设置视频源的额外优化参数
+                try {
+                    // 设置较低的初始分辨率和较高的帧率
+                    if (videoSource != null) {
+                        Method adaptOutputFormatMethod = null;
+                        
+                        // 查找adaptOutputFormat方法
+                        for (Method method : videoSource.getClass().getDeclaredMethods()) {
+                            if (method.getName().equals("adaptOutputFormat")) {
+                                adaptOutputFormatMethod = method;
+                                break;
+                            }
+                        }
+                        
+                        if (adaptOutputFormatMethod != null) {
+                            adaptOutputFormatMethod.setAccessible(true);
+                            adaptOutputFormatMethod.invoke(videoSource, captureWidth, captureHeight, captureFrameRate);
+                            Log.d(TAG, "强制设置视频源格式为 " + captureWidth + "x" + captureHeight + "@" + captureFrameRate + "fps");
                         }
                     }
-                } else {
-                    Log.e(TAG, "无法创建SurfaceTextureHelper，因为EglBase为null");
+                } catch (Exception e) {
+                    Log.e(TAG, "Error optimizing video source parameters: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                Log.e(TAG, "创建SurfaceTextureHelper失败: " + e.getMessage(), e);
-                // 继续尝试，可能部分功能可用
-            }
-            
-            // 创建视频源
-            if (videoSource == null) {
-                videoSource = peerConnectionFactory.createVideoSource(true); // 明确设置为isScreencast=true
-                Log.d(TAG, "视频源创建成功");
-            } else {
-                Log.d(TAG, "复用已存在的视频源");
-            }
-            
-            // 初始化捕获器
-            try {
-                if (videoCapturer != null) {
-                    if (surfaceTextureHelper != null) {
-                        videoCapturer.initialize(surfaceTextureHelper, mContext, videoSource.getCapturerObserver());
-                    } else {
-                        // 尝试直接初始化
-                        videoCapturer.initialize(null, mContext, videoSource.getCapturerObserver());
+                
+                videoCapturer.initialize(surfaceTextureHelper, mContext, videoSource.getCapturerObserver());
+                this.surfaceTextureHelper = surfaceTextureHelper;
+                
+                // 初始化视频捕获器后
+                try {
+                    // 1. 使用标准方法启动捕获
+                    videoCapturer.startCapture(captureWidth, captureHeight, captureFrameRate);
+                    Log.d(TAG, "已启动标准捕获: " + captureWidth + "x" + captureHeight + "@" + captureFrameRate);
+                    
+                    // 添加捕获状态监听
+                    if (videoCapturer instanceof ScreenCapturerAndroid) {
+                        ScreenCapturerAndroid screenCap = (ScreenCapturerAndroid)videoCapturer;
+                        try {
+                            // 尝试添加捕获回调
+                            Method addCaptureCallbackMethod = screenCap.getClass().getDeclaredMethod("addCaptureCallback", 
+                                Class.forName("org.webrtc.VideoCapturer$CapturerObserver"));
+                            if (addCaptureCallbackMethod != null) {
+                                addCaptureCallbackMethod.setAccessible(true);
+                                
+                                // 创建捕获回调
+                                Object captureObserver = new Object() {
+                                    public void onCapturerStarted(boolean success) {
+                                        Log.d(TAG, "屏幕捕获已启动: " + success);
+                                    }
+                                    
+                                    public void onCapturerStopped() {
+                                        Log.d(TAG, "屏幕捕获已停止");
+                                    }
+                                    
+                                    public void onFrameCaptured(VideoFrame frame) {
+                                        // 记录帧信息
+                                        if (frame != null) {
+                                            Log.d(TAG, "捕获到帧: 宽度=" + frame.getBuffer().getWidth() + 
+                                                  ", 高度=" + frame.getBuffer().getHeight() + 
+                                                  ", 旋转=" + frame.getRotation());
+                                        }
+                                    }
+                                };
+                                
+                                // 添加回调
+                                addCaptureCallbackMethod.invoke(screenCap, captureObserver);
+                                Log.d(TAG, "成功添加捕获回调");
+                            }
+                        } catch (Exception e) {
+                            Log.d(TAG, "添加捕获回调失败: " + e.getMessage());
+                        }
                     }
                     
-                    Log.d(TAG, "视频捕获器初始化成功");
-                } else {
-                    Log.e(TAG, "视频捕获器为null，无法初始化");
-                    throw new RuntimeException("视频捕获器为null");
+                    // 检查捕获是否成功启动
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        if (videoSource != null) {
+                            try {
+                                Method isCapturingMethod = videoSource.getClass().getDeclaredMethod("isCapturing");
+                                if (isCapturingMethod != null) {
+                                    isCapturingMethod.setAccessible(true);
+                                    boolean isCapturing = (boolean)isCapturingMethod.invoke(videoSource);
+                                    Log.d(TAG, "视频源捕获状态: " + (isCapturing ? "正在捕获" : "未捕获"));
+                                }
+                            } catch (Exception e) {
+                                Log.d(TAG, "检查捕获状态失败: " + e.getMessage());
+                            }
+                        }
+                    }, 1000); // 1秒后检查
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "设置捕获参数失败: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                Log.e(TAG, "初始化视频捕获器失败: " + e.getMessage(), e);
-                // 仍然继续，尝试启动捕获
-            }
-            
-            boolean captureStarted = false;
-            
-            // 使用较低的分辨率和帧率，确保兼容性和性能
-            try {
-                Log.d(TAG, "开始视频捕获: 640x480 @ 15fps");
-                videoCapturer.startCapture(640, 480, 15);
-                captureStarted = true;
-            } catch (Exception e) {
-                Log.e(TAG, "启动视频捕获失败: " + e.getMessage(), e);
-                if (e.getMessage() != null && e.getMessage().contains("Cannot start already started MediaProjection")) {
-                    // 如果MediaProjection已经启动，我们将继续，因为捕获可能仍然工作
-                    Log.w(TAG, "MediaProjection已经启动，继续处理");
-                    captureStarted = true;
-                } else {
-                    // 对于其他错误，尝试低分辨率
-                    try {
-                        Log.d(TAG, "尝试更低分辨率: 320x240 @ 10fps");
-                        videoCapturer.startCapture(320, 240, 10);
-                        captureStarted = true;
-                    } catch (Exception e2) {
-                        Log.e(TAG, "尝试低分辨率捕获也失败: " + e2.getMessage(), e2);
-                        // 仍然继续创建媒体流，可能部分功能可用
-                    }
-                }
-            }
-            
-            if (!captureStarted) {
-                Log.w(TAG, "未能启动视频捕获，但将继续创建媒体流");
-            }
-            
-            // 创建视频轨道
-            if (localVideoTrack == null) {
-                localVideoTrack = peerConnectionFactory.createVideoTrack(VIDEO_TRACK_ID, videoSource);
-                localVideoTrack.setEnabled(true);
-                Log.d(TAG, "创建了新的视频轨道: ID=" + localVideoTrack.id() + ", 启用状态=" + localVideoTrack.enabled());
-            } else {
-                Log.d(TAG, "复用已存在的视频轨道: ID=" + localVideoTrack.id() + ", 启用状态=" + localVideoTrack.enabled());
-            }
-            
-            // 创建音频源和轨道（仍然禁用音频）
-            if (audioSource == null) {
-                audioSource = peerConnectionFactory.createAudioSource(audioConstraints);
-            }
-            
-            if (localAudioTrack == null) {
-                localAudioTrack = peerConnectionFactory.createAudioTrack(AUDIO_TRACK_ID, audioSource);
-                localAudioTrack.setEnabled(false); // 禁用音频
-            }
-            
-            // 创建本地媒体流
-            if (localMediaStream == null) {
-                localMediaStream = peerConnectionFactory.createLocalMediaStream(LOCAL_STREAM_ID);
-                
-                // 确保轨道被添加到媒体流
-                if (localMediaStream.videoTracks.size() == 0 && localVideoTrack != null) {
-                    localMediaStream.addTrack(localVideoTrack);
-                    Log.d(TAG, "已将视频轨道添加到媒体流");
-                }
-                
-                if (localMediaStream.audioTracks.size() == 0 && localAudioTrack != null) {
-                    localMediaStream.addTrack(localAudioTrack);
-                    Log.d(TAG, "已将音频轨道添加到媒体流");
-                }
-                
-                Log.d(TAG, "本地媒体流创建成功，轨道数量: " + localMediaStream.videoTracks.size() + " 视频, " 
-                        + localMediaStream.audioTracks.size() + " 音频");
-            } else {
-                Log.d(TAG, "复用已存在的本地媒体流，轨道数量: " + localMediaStream.videoTracks.size() + " 视频, " 
-                        + localMediaStream.audioTracks.size() + " 音频");
-            }
-                
-            // 通知媒体流创建成功
-            if (mListener != null) {
-                mainHandler.post(() -> mListener.onLocalStreamCreated(localMediaStream));
             }
         } catch (Exception e) {
-            Log.e(TAG, "创建本地媒体流失败: " + e.getMessage(), e);
-            if (mListener != null) {
-                mainHandler.post(() -> mListener.onError("创建本地媒体流失败: " + e.getMessage()));
-            }
-            releaseScreenCapturer();
-            throw new RuntimeException("创建本地媒体流失败", e);
+            Log.e(TAG, "Error creating screen capturer: " + e.getMessage());
+            e.printStackTrace();
         }
     }
     
@@ -1658,6 +1705,233 @@ public class WebRTCService {
         mState = state;
         if (mListener != null) {
             mainHandler.post(() -> mListener.onStateChanged(state));
+        }
+    }
+
+    /**
+     * 自定义视频编码器工厂，用于优先使用指定的编解码器
+     */
+    private static class CustomVideoEncoderFactory extends DefaultVideoEncoderFactory {
+        private final org.webrtc.VideoCodecInfo[] preferredCodecs;
+        
+        public CustomVideoEncoderFactory(EglBase.Context eglContext, 
+                                         boolean enableIntelVp8Encoder,
+                                         boolean enableH264HighProfile,
+                                         org.webrtc.VideoCodecInfo[] preferredCodecs) {
+            super(eglContext, enableIntelVp8Encoder, enableH264HighProfile);
+            this.preferredCodecs = preferredCodecs;
+        }
+        
+        @Override
+        public org.webrtc.VideoCodecInfo[] getSupportedCodecs() {
+            return preferredCodecs != null ? preferredCodecs : super.getSupportedCodecs();
+        }
+    }
+
+    /**
+     * 释放屏幕捕获器
+     */
+    private void releaseScreenCapturer() {
+        try {
+            // 停止屏幕捕获器
+            if (screenCapturer != null) {
+                screenCapturer.stopCapture();
+                screenCapturer.dispose();
+                screenCapturer = null;
+            }
+            
+            // 释放视频源
+            if (videoSource != null) {
+                videoSource.dispose();
+                videoSource = null;
+            }
+            
+            // 释放视频轨道
+            if (localVideoTrack != null) {
+                localVideoTrack.dispose();
+                localVideoTrack = null;
+            }
+            
+            // 停止MediaProjection
+            if (mediaProjection != null) {
+                mediaProjection.stop();
+                mediaProjection = null;
+            }
+            
+            Log.d(TAG, "屏幕捕获器已释放");
+        } catch (Exception e) {
+            Log.e(TAG, "释放屏幕捕获器出错", e);
+        }
+    }
+
+    /**
+     * 创建本地媒体流
+     */
+    private void createLocalStream() {
+        try {
+            Log.d(TAG, "创建本地媒体流");
+            
+            // 确保视频源已创建
+            if (videoSource == null) {
+                Log.w(TAG, "视频源为null，尝试创建屏幕捕获器");
+                createScreenCapturer();
+                return;
+            }
+            
+            // 创建音频源（但保持禁用状态）
+            if (audioSource == null) {
+                audioSource = peerConnectionFactory.createAudioSource(audioConstraints);
+                Log.d(TAG, "创建了音频源");
+            }
+            
+            // 创建视频轨道
+            if (localVideoTrack == null && videoSource != null) {
+                localVideoTrack = peerConnectionFactory.createVideoTrack(VIDEO_TRACK_ID, videoSource);
+                localVideoTrack.setEnabled(true);
+                Log.d(TAG, "创建了视频轨道: " + localVideoTrack.id());
+                
+                // 添加帧率监控
+                try {
+                    // 初始化帧率监控时间
+                    lastFpsLogTime = System.currentTimeMillis();
+                    
+                    // 获取原始VideoSink
+                    Field sinkField = localVideoTrack.getClass().getDeclaredField("sink");
+                    if (sinkField != null) {
+                        sinkField.setAccessible(true);
+                        VideoSink originalSink = (VideoSink) sinkField.get(localVideoTrack);
+                        
+                        // 创建并设置带监控的VideoSink
+                        if (originalSink != null) {
+                            FrameRateMonitor monitor = new FrameRateMonitor(originalSink);
+                            sinkField.set(localVideoTrack, monitor);
+                            Log.d(TAG, "成功添加帧率监控器");
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "添加帧率监控器失败: " + e.getMessage());
+                }
+                
+                // 设置视频轨道的内容提示为屏幕共享
+                try {
+                    // 检查setContentHint方法是否存在
+                    Method setContentHintMethod = null;
+                    
+                    for (Method method : localVideoTrack.getClass().getDeclaredMethods()) {
+                        if (method.getName().equals("setContentHint")) {
+                            setContentHintMethod = method;
+                            break;
+                        }
+                    }
+                    
+                    if (setContentHintMethod != null) {
+                        // 获取参数类型
+                        Class<?>[] paramTypes = setContentHintMethod.getParameterTypes();
+                        if (paramTypes.length == 1) {
+                            // 根据参数类型调用方法
+                            if (paramTypes[0].isEnum()) {
+                                // 如果参数是枚举类型
+                                try {
+                                    // 尝试获取SCREENSHARE枚举值
+                                    Class<?> enumClass = paramTypes[0];
+                                    Object[] constants = enumClass.getEnumConstants();
+                                    Object screenShareEnum = null;
+                                    
+                                    // 查找名为SCREENSHARE的枚举常量
+                                    for (Object constant : constants) {
+                                        if (constant.toString().equals("SCREENSHARE")) {
+                                            screenShareEnum = constant;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if (screenShareEnum != null) {
+                                        // 调用setContentHint方法
+                                        setContentHintMethod.invoke(localVideoTrack, screenShareEnum);
+                                        Log.d(TAG, "Successfully set content hint to SCREENSHARE (enum)");
+                                    }
+                                } catch (Exception e) {
+                                    Log.e(TAG, "Error setting content hint (enum): " + e.getMessage());
+                                }
+                            } else if (paramTypes[0] == int.class || paramTypes[0] == Integer.class) {
+                                // 如果参数是整数类型，假设SCREENSHARE的值为2
+                                setContentHintMethod.invoke(localVideoTrack, 2);
+                                Log.d(TAG, "Successfully set content hint to SCREENSHARE (int)");
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error setting content hint: " + e.getMessage());
+                }
+            }
+            
+            // 创建音频轨道（但保持禁用状态）
+            if (localAudioTrack == null && audioSource != null) {
+                localAudioTrack = peerConnectionFactory.createAudioTrack(AUDIO_TRACK_ID, audioSource);
+                localAudioTrack.setEnabled(false); // 默认禁用音频
+                Log.d(TAG, "创建了音频轨道: " + localAudioTrack.id() + " (禁用状态)");
+            }
+            
+            // 创建本地媒体流
+            if (localMediaStream == null) {
+                localMediaStream = peerConnectionFactory.createLocalMediaStream(LOCAL_STREAM_ID);
+                // Log.d(TAG, "创建了本地媒体流: " + localMediaStream.id());
+                
+                // 添加视频轨道
+                if (localVideoTrack != null && localMediaStream.videoTracks.size() == 0) {
+                    localMediaStream.addTrack(localVideoTrack);
+                    Log.d(TAG, "添加视频轨道到媒体流");
+                }
+                
+                // 添加音频轨道（虽然禁用）
+                if (localAudioTrack != null && localMediaStream.audioTracks.size() == 0) {
+                    localMediaStream.addTrack(localAudioTrack);
+                    Log.d(TAG, "添加音频轨道到媒体流(禁用状态)");
+                }
+                
+                // 通知监听器
+                if (mListener != null) {
+                    mainHandler.post(() -> mListener.onLocalStreamCreated(localMediaStream));
+                }
+                
+                // Log.d(TAG, "本地媒体流创建完成: " + localMediaStream.id() +
+                //         ", 视频轨道数: " + localMediaStream.videoTracks.size() +
+                //         ", 音频轨道数: " + localMediaStream.audioTracks.size());
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "创建本地媒体流失败", e);
+            throw new RuntimeException("创建本地媒体流失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 创建帧率监控器
+     */
+    private class FrameRateMonitor implements VideoSink {
+        private VideoSink target;
+        
+        public FrameRateMonitor(VideoSink target) {
+            this.target = target;
+        }
+        
+        @Override
+        public void onFrame(VideoFrame frame) {
+            // 转发帧到目标
+            if (target != null) {
+                target.onFrame(frame);
+            }
+            
+            // 计数并记录帧率
+            synchronized (fpsLock) {
+                frameCount++;
+                long now = System.currentTimeMillis();
+                if (now - lastFpsLogTime > 5000) { // 每5秒记录一次
+                    float fps = frameCount * 1000.0f / (now - lastFpsLogTime);
+                    Log.i(TAG, "发送帧率: " + fps + " FPS");
+                    frameCount = 0;
+                    lastFpsLogTime = now;
+                }
+            }
         }
     }
 }
