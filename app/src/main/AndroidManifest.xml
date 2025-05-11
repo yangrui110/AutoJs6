@@ -722,6 +722,11 @@
             android:name="moe.shizuku.client.V3_SUPPORT"
             android:value="true" />
 
+        <!-- 禁用Flurry ContentProvider以解决TelephonyCallback兼容性问题 -->
+        <provider
+            android:name="com.flurry.android.agent.FlurryContentProvider"
+            tools:node="remove" />
+
     </application>
 
 </manifest>

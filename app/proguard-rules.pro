@@ -160,3 +160,15 @@
 # Toaster
 
 -keep class com.hjq.toast.** {*;}
+
+# 添加规则处理TelephonyCallback相关问题
+-dontwarn android.telephony.TelephonyCallback
+-dontwarn android.telephony.TelephonyCallback$*
+-dontwarn com.flurry.sdk.av$a
+
+# 处理Flurry SDK的兼容性问题
+-keepclassmembers class com.flurry.** { 
+    *; 
+}
+-keep class com.flurry.** { *; }
+-dontwarn com.flurry.**

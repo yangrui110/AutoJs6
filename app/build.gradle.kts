@@ -37,6 +37,11 @@ dependencies /* Unclassified */ {
     // Compose
     // implementation("androidx.compose.ui:ui-android:1.6.7")
 
+    // WebRTC 相关依赖
+    // 仅在需要时取消注释
+    implementation("org.webrtc:google-webrtc:1.0.32006")
+    implementation("org.java-websocket:Java-WebSocket:1.5.3")
+
     // Kotlin reflect
     implementation(kotlin("reflect"))
 
@@ -557,6 +562,8 @@ android {
 
         getByName("main") {
             assets.srcDirs("src/main/assets")
+            manifest.srcFile("src/main/AndroidManifest.xml")
+            resources.srcDirs("src/main/res", "src/main/res-overlay")
         }
         getByName("release") {
             java.srcDirs("src/release/java")
@@ -983,11 +990,17 @@ android {
             isMinifyEnabled = getByName(buildTypeRelease).isMinifyEnabled
             proguardFiles(*proguardFiles)
             niceSigningConfig?.let { signingConfig = it }
+            
+            // 添加配置避免Flurry SDK的TelephonyCallback问题
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         release {
             isMinifyEnabled = false
             proguardFiles(*proguardFiles)
             niceSigningConfig?.let { signingConfig = it }
+            
+            // 添加配置避免Flurry SDK的TelephonyCallback问题
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
@@ -1070,6 +1083,15 @@ android {
 tasks {
     withType(JavaCompile::class.java) {
         options.encoding = "UTF-8"
+    }
+
+    // 添加一个任务来清理生成的APK文件
+    register("cleanApks") {
+        doLast {
+            delete(fileTree("build/intermediates/apk").include("**/*.apk"))
+            delete(fileTree("build/outputs/apk").include("**/*.apk"))
+            println("清理了所有生成的APK文件")
+        }
     }
 
     // 修改这里，使用新的任务名称

@@ -80,10 +80,30 @@ class App : MultiDexApplication() {
 
     private fun setUpStaticsTool() {
         if (!BuildConfig.DEBUG) {
-            @Suppress("SpellCheckingInspection")
-            FlurryAgent.Builder()
-                .withLogEnabled(BuildConfig.DEBUG)
-                .build(this, "D42MH48ZN4PJC5TKNYZD")
+            try {
+                // 对于Android 12及以上版本，我们已经移除了FlurryContentProvider
+                // 所以需要在此处手动初始化Flurry
+                @Suppress("SpellCheckingInspection")
+                FlurryAgent.Builder()
+                    .withLogEnabled(BuildConfig.DEBUG)
+                    .build(this, "D42MH48ZN4PJC5TKNYZD")
+
+                // 手动调用Flurry的init方法，替代ContentProvider的初始化
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    Log.d("FlurryInit", "Manually initializing Flurry for Android 12+")
+                    try {
+                        // 使用反射调用Flurry SDK的init方法
+                        val flurryAgentClass = Class.forName("com.flurry.android.FlurryAgent")
+                        val initMethod = flurryAgentClass.getDeclaredMethod("init", Context::class.java)
+                        initMethod.invoke(null, this)
+                    } catch (e: Exception) {
+                        Log.e("FlurryInit", "Failed to manually initialize Flurry: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                // 捕获并记录Flurry初始化过程中的任何错误
+                Log.e("FlurryInit", "Error initializing Flurry: ${e.message}")
+            }
         }
     }
 
