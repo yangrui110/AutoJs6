@@ -544,7 +544,6 @@ android {
     }
 
     sourceSets {
-
         // @Hint by LZX284 (https://github.com/LZX284) on Nov 15, 2023.
         //  ! The assets file is divided into three directories according to different flavors.
         //  ! But the files are not actually moved to avoid conflicts with the latest modifications.
@@ -571,7 +570,332 @@ android {
         getByName(flavorNameInrt) {
             assets.srcDirs("src/main/assets-$flavorNameInrt")
         }
+    }
 
+    // 创建一个任务来修复生成的AIDL Java文件
+    tasks.register("fixGeneratedAidlJavaFile") {
+        doLast {
+            val generatedFile = File(project.projectDir, "app/build/generated/aidl_source_output_dir/appDebug/out/org/autojs/autojs/core/shizuku/IUserService.java")
+            
+            if (generatedFile.exists()) {
+                println("[AIDL修复] 正在处理文件: ${generatedFile.absolutePath}")
+                
+                // 读取文件内容
+                val content = generatedFile.readText()
+                
+                // 替换文件内容 - 完全替换为正确的版本
+                generatedFile.writeText("""
+                    /*
+                     * 手动修复文件 - 替代自动生成的有问题文件
+                     */
+                    package org.autojs.autojs.core.shizuku;
+
+                    public interface IUserService extends android.os.IInterface {
+                        /** Default implementation for IUserService. */
+                        public static class Default implements org.autojs.autojs.core.shizuku.IUserService {
+                            @Override public void destroy() throws android.os.RemoteException {}
+                            @Override public void exit() throws android.os.RemoteException {}
+                            @Override public String execCommand(String command) throws android.os.RemoteException { return null; }
+                            @Override public String currentPackage() throws android.os.RemoteException { return null; }
+                            @Override public String currentActivity() throws android.os.RemoteException { return null; }
+                            @Override public String currentComponent() throws android.os.RemoteException { return null; }
+                            @Override public String currentComponentShort() throws android.os.RemoteException { return null; }
+                            @Override public android.os.IBinder asBinder() { return null; }
+                        }
+                        
+                        /** Local-side IPC implementation stub class. */
+                        public static abstract class Stub extends android.os.Binder implements org.autojs.autojs.core.shizuku.IUserService {
+                            static final int TRANSACTION_destroy = android.os.IBinder.FIRST_CALL_TRANSACTION + 16777114;
+                            static final int TRANSACTION_exit = android.os.IBinder.FIRST_CALL_TRANSACTION + 1;
+                            static final int TRANSACTION_execCommand = android.os.IBinder.FIRST_CALL_TRANSACTION + 2;
+                            static final int TRANSACTION_currentPackage = android.os.IBinder.FIRST_CALL_TRANSACTION + 11;
+                            static final int TRANSACTION_currentActivity = android.os.IBinder.FIRST_CALL_TRANSACTION + 12;
+                            static final int TRANSACTION_currentComponent = android.os.IBinder.FIRST_CALL_TRANSACTION + 13;
+                            static final int TRANSACTION_currentComponentShort = android.os.IBinder.FIRST_CALL_TRANSACTION + 14;
+                            
+                            @SuppressWarnings("this-escape")
+                            public Stub() {
+                                this.attachInterface(this, DESCRIPTOR);
+                            }
+                            
+                            public static org.autojs.autojs.core.shizuku.IUserService asInterface(android.os.IBinder obj) {
+                                if ((obj==null)) {
+                                    return null;
+                                }
+                                android.os.IInterface iin = obj.queryLocalInterface(DESCRIPTOR);
+                                if (((iin!=null)&&(iin instanceof org.autojs.autojs.core.shizuku.IUserService))) {
+                                    return ((org.autojs.autojs.core.shizuku.IUserService)iin);
+                                }
+                                return new org.autojs.autojs.core.shizuku.IUserService.Stub.Proxy(obj);
+                            }
+                            
+                            @Override
+                            public android.os.IBinder asBinder() {
+                                return this;
+                            }
+                            
+                            @Override
+                            public boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags) throws android.os.RemoteException {
+                                java.lang.String descriptor = DESCRIPTOR;
+                                if (code >= android.os.IBinder.FIRST_CALL_TRANSACTION && code <= android.os.IBinder.LAST_CALL_TRANSACTION) {
+                                    data.enforceInterface(descriptor);
+                                }
+                                if (code == INTERFACE_TRANSACTION) {
+                                    reply.writeString(descriptor);
+                                    return true;
+                                }
+                                switch (code) {
+                                    case TRANSACTION_destroy: {
+                                        this.destroy();
+                                        reply.writeNoException();
+                                        break;
+                                    }
+                                    case TRANSACTION_exit: {
+                                        this.exit();
+                                        reply.writeNoException();
+                                        break;
+                                    }
+                                    case TRANSACTION_execCommand: {
+                                        String _arg0;
+                                        _arg0 = data.readString();
+                                        String _result = this.execCommand(_arg0);
+                                        reply.writeNoException();
+                                        reply.writeString(_result);
+                                        break;
+                                    }
+                                    case TRANSACTION_currentPackage: {
+                                        String _result = this.currentPackage();
+                                        reply.writeNoException();
+                                        reply.writeString(_result);
+                                        break;
+                                    }
+                                    case TRANSACTION_currentActivity: {
+                                        String _result = this.currentActivity();
+                                        reply.writeNoException();
+                                        reply.writeString(_result);
+                                        break;
+                                    }
+                                    case TRANSACTION_currentComponent: {
+                                        String _result = this.currentComponent();
+                                        reply.writeNoException();
+                                        reply.writeString(_result);
+                                        break;
+                                    }
+                                    case TRANSACTION_currentComponentShort: {
+                                        String _result = this.currentComponentShort();
+                                        reply.writeNoException();
+                                        reply.writeString(_result);
+                                        break;
+                                    }
+                                    default: {
+                                        return super.onTransact(code, data, reply, flags);
+                                    }
+                                }
+                                return true;
+                            }
+                            
+                            private static class Proxy implements org.autojs.autojs.core.shizuku.IUserService {
+                                private android.os.IBinder mRemote;
+                                
+                                Proxy(android.os.IBinder remote) {
+                                    mRemote = remote;
+                                }
+                                
+                                @Override
+                                public android.os.IBinder asBinder() {
+                                    return mRemote;
+                                }
+                                
+                                public String getInterfaceDescriptor() {
+                                    return DESCRIPTOR;
+                                }
+                                
+                                @Override
+                                public void destroy() throws android.os.RemoteException {
+                                    android.os.Parcel _data = android.os.Parcel.obtain();
+                                    android.os.Parcel _reply = android.os.Parcel.obtain();
+                                    try {
+                                        _data.writeInterfaceToken(DESCRIPTOR);
+                                        boolean _status = mRemote.transact(Stub.TRANSACTION_destroy, _data, _reply, 0);
+                                        _reply.readException();
+                                    }
+                                    finally {
+                                        _reply.recycle();
+                                        _data.recycle();
+                                    }
+                                }
+                                
+                                @Override
+                                public void exit() throws android.os.RemoteException {
+                                    android.os.Parcel _data = android.os.Parcel.obtain();
+                                    android.os.Parcel _reply = android.os.Parcel.obtain();
+                                    try {
+                                        _data.writeInterfaceToken(DESCRIPTOR);
+                                        boolean _status = mRemote.transact(Stub.TRANSACTION_exit, _data, _reply, 0);
+                                        _reply.readException();
+                                    }
+                                    finally {
+                                        _reply.recycle();
+                                        _data.recycle();
+                                    }
+                                }
+                                
+                                @Override
+                                public String execCommand(String command) throws android.os.RemoteException {
+                                    android.os.Parcel _data = android.os.Parcel.obtain();
+                                    android.os.Parcel _reply = android.os.Parcel.obtain();
+                                    String _result;
+                                    try {
+                                        _data.writeInterfaceToken(DESCRIPTOR);
+                                        _data.writeString(command);
+                                        boolean _status = mRemote.transact(Stub.TRANSACTION_execCommand, _data, _reply, 0);
+                                        _reply.readException();
+                                        _result = _reply.readString();
+                                    }
+                                    finally {
+                                        _reply.recycle();
+                                        _data.recycle();
+                                    }
+                                    return _result;
+                                }
+                                
+                                @Override
+                                public String currentPackage() throws android.os.RemoteException {
+                                    android.os.Parcel _data = android.os.Parcel.obtain();
+                                    android.os.Parcel _reply = android.os.Parcel.obtain();
+                                    String _result;
+                                    try {
+                                        _data.writeInterfaceToken(DESCRIPTOR);
+                                        boolean _status = mRemote.transact(Stub.TRANSACTION_currentPackage, _data, _reply, 0);
+                                        _reply.readException();
+                                        _result = _reply.readString();
+                                    }
+                                    finally {
+                                        _reply.recycle();
+                                        _data.recycle();
+                                    }
+                                    return _result;
+                                }
+                                
+                                @Override
+                                public String currentActivity() throws android.os.RemoteException {
+                                    android.os.Parcel _data = android.os.Parcel.obtain();
+                                    android.os.Parcel _reply = android.os.Parcel.obtain();
+                                    String _result;
+                                    try {
+                                        _data.writeInterfaceToken(DESCRIPTOR);
+                                        boolean _status = mRemote.transact(Stub.TRANSACTION_currentActivity, _data, _reply, 0);
+                                        _reply.readException();
+                                        _result = _reply.readString();
+                                    }
+                                    finally {
+                                        _reply.recycle();
+                                        _data.recycle();
+                                    }
+                                    return _result;
+                                }
+                                
+                                @Override
+                                public String currentComponent() throws android.os.RemoteException {
+                                    android.os.Parcel _data = android.os.Parcel.obtain();
+                                    android.os.Parcel _reply = android.os.Parcel.obtain();
+                                    String _result;
+                                    try {
+                                        _data.writeInterfaceToken(DESCRIPTOR);
+                                        boolean _status = mRemote.transact(Stub.TRANSACTION_currentComponent, _data, _reply, 0);
+                                        _reply.readException();
+                                        _result = _reply.readString();
+                                    }
+                                    finally {
+                                        _reply.recycle();
+                                        _data.recycle();
+                                    }
+                                    return _result;
+                                }
+                                
+                                @Override
+                                public String currentComponentShort() throws android.os.RemoteException {
+                                    android.os.Parcel _data = android.os.Parcel.obtain();
+                                    android.os.Parcel _reply = android.os.Parcel.obtain();
+                                    String _result;
+                                    try {
+                                        _data.writeInterfaceToken(DESCRIPTOR);
+                                        boolean _status = mRemote.transact(Stub.TRANSACTION_currentComponentShort, _data, _reply, 0);
+                                        _reply.readException();
+                                        _result = _reply.readString();
+                                    }
+                                    finally {
+                                        _reply.recycle();
+                                        _data.recycle();
+                                    }
+                                    return _result;
+                                }
+                            }
+                        }
+                        /** @hide */
+                        public static final java.lang.String DESCRIPTOR = "org.autojs.autojs.core.shizuku.IUserService";
+                        public void destroy() throws android.os.RemoteException;
+                        public void exit() throws android.os.RemoteException;
+                        public String execCommand(String command) throws android.os.RemoteException;
+                        public String currentPackage() throws android.os.RemoteException;
+                        public String currentActivity() throws android.os.RemoteException;
+                        public String currentComponent() throws android.os.RemoteException;
+                        public String currentComponentShort() throws android.os.RemoteException;
+                    }
+                """.trimIndent())
+                
+                // 修改文件为只读，防止被覆盖
+                generatedFile.setReadOnly()
+                
+                println("[AIDL修复] 文件已修复并设为只读")
+            } else {
+                println("[AIDL修复] 文件不存在，可能尚未生成: ${generatedFile.absolutePath}")
+            }
+        }
+    }
+    
+    // 在compileJava前运行修复任务
+    tasks.whenTaskAdded {
+        if (name.startsWith("compileDebugJava") || name.startsWith("compileReleaseJava")) {
+            dependsOn("fixGeneratedAidlJavaFile")
+        }
+    }
+
+    // 我们仍然保留原来的AIDL文件修复任务
+    tasks.register("fixAidlFile") {
+        doLast {
+            val aidlFilePath = "src/main/aidl/org/autojs/autojs/core/shizuku/IUserService.aidl"
+            val aidlFile = File(project.projectDir, aidlFilePath)
+            
+            // 如果文件存在，我们替换其内容
+            if (aidlFile.exists()) {
+                println("[AIDL处理] 正在替换文件: ${aidlFile.absolutePath}")
+                
+                // 替换为简化版，去除可能导致问题的转义字符
+                aidlFile.writeText("""
+                    package org.autojs.autojs.core.shizuku;
+                    
+                    interface IUserService {
+                        void destroy();
+                        void exit();
+                        String execCommand(String command);
+                        String currentPackage();
+                        String currentActivity();
+                        String currentComponent();
+                        String currentComponentShort();
+                    }
+                """.trimIndent())
+                
+                println("[AIDL处理] 文件已替换")
+            } else {
+                println("[AIDL处理] 文件不存在: ${aidlFile.absolutePath}")
+            }
+        }
+    }
+    
+    // 确保在preBuild前先修复AIDL文件
+    tasks.named("preBuild").configure {
+        dependsOn("fixAidlFile")
     }
 
     compileOptions {
@@ -733,16 +1057,28 @@ android {
         }
     }
 
+    externalNativeBuild {
+        cmake {
+            version = "3.10.2"
+            // 可选：指定本地CMake路径，如果已经安装
+            // path = "C:\\Users\\Administrator\\AppData\\Local\\Android\\Sdk\\cmake\\3.10.2"
+        }
+    }
+
 }
 
 tasks {
     withType(JavaCompile::class.java) {
         options.encoding = "UTF-8"
+    }
 
-        // @Hint by SuperMonster003 on May 18, 2022.
-        //  ! Comment or remove this option if you are tired of plenty of warnings. :)
-        //  ! zh-CN: 注释或移除此选项可避免过多警告消息造成的困扰. [笑脸符号]
-        // options.compilerArgs.addAll(listOf("-Xlint:deprecation", "-Xlint:unchecked"))
+    // 修改这里，使用新的任务名称
+    afterEvaluate {
+        tasks.matching { task ->
+            task.name.startsWith("compile") && task.name.endsWith("JavaWithJavac")
+        }.configureEach {
+            dependsOn("fixAidlGeneratedFiles")
+        }
     }
 
     withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
@@ -770,6 +1106,21 @@ tasks {
             }
 
             doLast { println("Destination: ${file(dst)}") }
+        }
+    }
+
+    register("fixAidlGeneratedFiles") {
+        doLast {
+            val aidlDir = file("build/generated/aidl_source_output_dir/appDebug/out")
+            if (aidlDir.exists()) {
+                aidlDir.walk()
+                    .filter { it.name.endsWith(".java") }
+                    .forEach { javaFile ->
+                        val content = javaFile.readText()
+                        val fixedContent = content.replace("\\", "/")
+                        javaFile.writeText(fixedContent)
+                    }
+            }
         }
     }
 }

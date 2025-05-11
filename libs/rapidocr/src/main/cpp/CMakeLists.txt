@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22.1)
+cmake_minimum_required(VERSION 3.10.2)
 
 project(RapidOcr)
 
@@ -13,7 +13,7 @@ else ()
     message(FATAL_ERROR "onnxruntime Not Found!")
 endif (OnnxRuntime_FOUND)
 
-## opencv åº“
+## opencv åº?
 
 set(OpenCV_DIR "${CMAKE_SOURCE_DIR}/../../sdk/native/jni")
 find_package(OpenCV REQUIRED)
